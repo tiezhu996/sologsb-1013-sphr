@@ -1,502 +1,935 @@
 import Component from '@glimmer/component';
 import { tracked } from '@glimmer/tracking';
 import { action } from '@ember/object';
-import type { Cue, CueDraft, CueIssue, CueKind, Scene, ShowData, VersionDiff, VersionSnapshot } from 'stage-cue-editor/models/show';
-import { CUE_KINDS, OWNERS } from 'stage-cue-editor/models/show';
+import type {
+  ApplyJob,
+  CueBook,
+  CueKind,
+  EffectiveCue,
+  EffectiveScene,
+  ShowTemplate,
+  TemplateCue,
+  VersionDiff,
+  VersionSnapshot,
+} from 'stage-cue-editor/models/cue-book';
+import { CUE_KINDS, OWNERS } from 'stage-cue-editor/models/cue-book';
+import {
+  effectiveScene,
+  effectiveScenes,
+  findTemplate,
+  findVersion,
+} from 'stage-cue-editor/lib/cue-book/resolve';
+import { collectIssues } from 'stage-cue-editor/lib/cue-book/validation';
+import {
+  draftToTemplateCue,
+  moveTemplateCue,
+  publishTemplateVersion,
+  removeTemplateCue,
+  updateTemplateMeta,
+  upsertTemplateCue,
+} from 'stage-cue-editor/lib/cue-book/template';
+import {
+  applyJob,
+  createSceneJob,
+  failJob,
+  resumeJob,
+  upgradeSceneJob,
+} from 'stage-cue-editor/lib/cue-book/apply';
+import {
+  buildOverride,
+  type CueFieldValues,
+} from 'stage-cue-editor/lib/cue-book/override';
+import { timeLabel } from 'stage-cue-editor/lib/cue-book/timing';
+import { loadState, saveState } from 'stage-cue-editor/lib/cue-book/repository';
+import { clone, splitList, uid } from 'stage-cue-editor/lib/cue-book/util';
 
-const STORAGE_KEY = 'sologsb-1013-stage-cue-editor-v1';
-const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+type ViewMode = 'scene' | 'template';
 
-function cue(id: string, kind: CueKind, title: string, duration: number, owner: string, extra: Partial<Cue> = {}): Cue {
-  return {
-    id,
-    kind,
-    title,
-    duration,
-    owner,
-    lighting: '',
-    sound: '',
-    props: [],
-    cast: [],
-    notes: '',
-    dependsOn: [],
-    offset: 0,
-    ...extra,
-  };
+interface TemplateDraftCue {
+  key: string;
+  kind: CueKind;
+  title: string;
+  duration: number;
+  owner: string;
+  lighting: string;
+  sound: string;
+  props: string;
+  cast: string;
+  notes: string;
+  dependsOnKeys: string;
 }
 
-function initialShow(): ShowData {
-  const scenes: Scene[] = [
-    {
-      id: 'scene-1',
-      act: '第一幕',
-      name: 'S1',
-      title: '月下序场',
-      startTime: '19:30',
-      locked: false,
-      cues: [
-        cue('cue-light-1', '灯光', '观众席渐暗 · 面光起', 45, '李岚', { lighting: 'FOH 1 号面光 65%，侧光暖白 40%', notes: '开演铃后 10 秒执行' }),
-        cue('cue-actor-1', '演员', '说书人自左台入场', 90, '赵一帆', { cast: ['说书人／周启'], props: ['折扇'], notes: '追光跟随；入场后停留台中' }),
-        cue('cue-sound-1', '音响', '古琴引子淡入', 120, '陈默', { sound: 'Q1 古琴引子，-18dB 淡入 6 秒', dependsOn: ['cue-deleted-old'], notes: '旧版依赖保留用于检查示例' }),
-        cue('cue-prop-1', '道具', '月牙灯升至舞台中线', 75, '孙禾', { props: ['月牙灯'], lighting: '顶排 3 号定点' }),
-      ],
-    },
-    {
-      id: 'scene-2',
-      act: '第一幕',
-      name: 'S2',
-      title: '宫门夜宴',
-      startTime: '19:40',
-      locked: false,
-      cues: [
-        cue('cue-stage-2', '舞台', '中景屏风换为朱红', 60, '', { notes: '负责人尚未确认' }),
-        cue('cue-actor-2', '演员', '群臣列队入场', 110, '赵一帆', { cast: ['群演 6 人', '侍女 4 人'], props: ['宫灯'] }),
-        cue('cue-light-2', '灯光', '暖金顶光覆盖后区', 80, '李岚', { lighting: '顶光 4、5 号 70%，色温 3200K' }),
-      ],
-    },
-  ];
-  scenes.forEach((scene) => recalculateScene(scene));
-  return {
-    title: '《长夜行》首演提示表',
-    venue: '实验剧场 A 厅',
-    date: '2026-10-18',
-    scenes,
-    updatedAt: new Date().toISOString(),
-  };
-}
+const blankTemplateCue = (): TemplateDraftCue => ({
+  key: uid('cue'),
+  kind: '灯光',
+  title: '',
+  duration: 60,
+  owner: '',
+  lighting: '',
+  sound: '',
+  props: '',
+  cast: '',
+  notes: '',
+  dependsOnKeys: '',
+});
 
-function loadShow(): ShowData {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return initialShow();
-    const parsed = JSON.parse(raw) as { show: ShowData; versions: VersionSnapshot[] };
-    return parsed.show ?? initialShow();
-  } catch {
-    return initialShow();
-  }
-}
+const toDraftCue = (cue: TemplateCue): TemplateDraftCue => ({
+  key: cue.key,
+  kind: cue.kind,
+  title: cue.title,
+  duration: cue.duration,
+  owner: cue.owner,
+  lighting: cue.lighting,
+  sound: cue.sound,
+  props: cue.props.join('、'),
+  cast: cue.cast.join('、'),
+  notes: cue.notes,
+  dependsOnKeys: cue.dependsOnKeys.join('、'),
+});
 
-function loadVersions(): VersionSnapshot[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    return (JSON.parse(raw) as { versions: VersionSnapshot[] }).versions ?? [];
-  } catch {
-    return [];
-  }
-}
-
-function recalculateScene(scene: Scene): void {
-  let elapsed = 0;
-  scene.cues.forEach((item) => {
-    item.offset = elapsed;
-    elapsed += Number(item.duration) || 0;
-  });
-}
-
-function startSeconds(value: string): number {
-  const [hour = '0', minute = '0'] = value.split(':');
-  return Number(hour) * 3600 + Number(minute) * 60;
-}
-
-function timeLabel(scene: Scene, offset: number): string {
-  const total = startSeconds(scene.startTime) + offset;
-  const hour = Math.floor((total % 86400) / 3600);
-  const minute = Math.floor((total % 3600) / 60);
-  const second = total % 60;
-  return [hour, minute, second].map((part) => String(part).padStart(2, '0')).join(':');
-}
-
-function overlaps(aStart: number, aDuration: number, bStart: number, bDuration: number): boolean {
-  return aStart < bStart + bDuration && bStart < aStart + aDuration;
-}
+interface SceneDraftCue extends TemplateDraftCue {}
 
 export default class CueEditorComponent extends Component {
-  @tracked show: ShowData = loadShow();
-  @tracked versions: VersionSnapshot[] = loadVersions();
-  @tracked activeSceneId = this.show.scenes[0]?.id ?? '';
-  @tracked selectedCueId = this.show.scenes[0]?.cues[0]?.id ?? '';
-  @tracked draft: CueDraft | null = null;
+  @tracked book: CueBook;
+  @tracked versions: VersionSnapshot[];
+  @tracked jobs: ApplyJob[];
+
+  @tracked mode: ViewMode = 'scene';
+  @tracked activeSceneId = '';
+  @tracked selectedCueKey = '';
+
+  @tracked activeTemplateId = '';
+  @tracked templateDraftCues: TemplateCue[] = [];
+  @tracked templateNameDraft = '';
+  @tracked templateDescriptionDraft = '';
+  @tracked versionNote = '';
+  @tracked templateCueDraft: TemplateDraftCue | null = null;
+
+  @tracked sceneCueDraft: SceneDraftCue | null = null;
+
+  @tracked showCopyPanel = false;
+  @tracked copyTemplateId = '';
+  @tracked copyName = '';
+  @tracked copyTitle = '';
+  @tracked copyStartTime = '20:00';
+
   @tracked compareVersionId = '';
   @tracked message = '';
   @tracked search = '';
 
-  private undoStack: ShowData[] = [];
-  private redoStack: ShowData[] = [];
-  private dragCueId = '';
+  private undoStack: CueBook[] = [];
+  private redoStack: CueBook[] = [];
+  private dragKey = '';
 
   constructor(owner: unknown, args: Record<string, unknown>) {
     super(owner, args);
+    const state = loadState();
+    this.book = state.book;
+    this.versions = state.versions;
+    this.jobs = state.jobs;
+    this.activeSceneId = this.book.scenes[0]?.id ?? '';
+    this.selectedCueKey = this.activeEffective?.cues[0]?.key ?? '';
+    this.activeTemplateId = this.book.templates[0]?.id ?? '';
+    this.copyTemplateId = this.activeTemplateId;
+    if (this.activeTemplate) this.loadTemplateDraft(this.activeTemplate);
     window.addEventListener('keydown', this.handleKeyboard);
   }
 
-  get activeScene(): Scene | undefined {
-    return this.show.scenes.find((scene) => scene.id === this.activeSceneId);
-  }
-
-  get selectedCue(): Cue | undefined {
-    return this.activeScene?.cues.find((item) => item.id === this.selectedCueId);
-  }
-
-  get cueRows() {
-    if (!this.activeScene) return [];
-    return this.activeScene.cues.map((item, index) => ({
-      ...item,
-      index,
-      start: timeLabel(this.activeScene as Scene, item.offset),
-      end: timeLabel(this.activeScene as Scene, item.offset + item.duration),
-      selected: item.id === this.selectedCueId,
-      hasIssue: this.issues.some((issue) => issue.cueId === item.id),
-      kindClass: item.kind === '灯光' ? 'light' : item.kind === '音响' ? 'sound' : item.kind === '道具' ? 'prop' : item.kind === '演员' ? 'cast' : item.kind === '字幕' ? 'caption' : 'stage',
-      propsLabel: item.props.join('、'),
-      castLabel: item.cast.join('、'),
-    }));
-  }
-
-  get sceneRows() {
-    return this.show.scenes.map((scene) => ({
-      ...scene,
-      active: scene.id === this.activeSceneId,
-      issueCount: this.issues.filter((issue) => issue.sceneId === scene.id).length,
-      duration: scene.cues.reduce((total, item) => total + item.duration, 0),
-    }));
-  }
-
+  // ---------- 基础选项 ----------
   get cueKindOptions(): CueKind[] {
     return CUE_KINDS;
   }
-
   get ownerOptions(): string[] {
     return OWNERS;
   }
 
-  get allCues(): Array<{ cue: Cue; scene: Scene }> {
-    return this.show.scenes.flatMap((scene) => scene.cues.map((item) => ({ cue: item, scene })));
+  // ---------- 生效视图 ----------
+  get effectiveScenesView(): EffectiveScene[] {
+    return effectiveScenes(this.book);
   }
 
-  get issues(): CueIssue[] {
-    const issues: CueIssue[] = [];
-    this.allCues.forEach(({ cue: item, scene }) => {
-      const cueStart = startSeconds(scene.startTime) + item.offset;
-      if (!item.owner) {
-        issues.push({ id: `owner-${item.id}`, severity: 'error', title: '负责人空缺', detail: `${scene.act} ${scene.name}「${item.title}」尚未指定负责人。`, sceneId: scene.id, cueId: item.id });
-      }
-      item.dependsOn.forEach((reference) => {
-        if (!this.allCues.some((entry) => entry.cue.id === reference)) {
-          issues.push({ id: `ref-${item.id}-${reference}`, severity: 'error', title: '提示被引用但已删除', detail: `「${item.title}」仍依赖已删除的提示 ${reference}。`, sceneId: scene.id, cueId: item.id });
-        }
-      });
-      const previous = scene.cues[scene.cues.indexOf(item) - 1];
-      if (previous && item.offset < previous.offset + previous.duration) {
-        issues.push({ id: `overlap-${item.id}`, severity: 'error', title: '同场时间冲突', detail: `「${item.title}」与上一条提示重叠。`, sceneId: scene.id, cueId: item.id });
-      }
+  get activeEffective(): EffectiveScene | undefined {
+    const scene = this.book.scenes.find(
+      (item) => item.id === this.activeSceneId,
+    );
+    return scene ? effectiveScene(this.book, scene) : undefined;
+  }
+
+  get selectedCue(): EffectiveCue | undefined {
+    return this.activeEffective?.cues.find(
+      (cue) => cue.key === this.selectedCueKey,
+    );
+  }
+
+  get sceneRows() {
+    const term = this.search.trim().toLowerCase();
+    return this.effectiveScenesView
+      .map((effective) => {
+        const templateName = effective.template?.name ?? '模板缺失';
+        const stale = !effective.upToDate;
+        const cueCount = effective.cues.length;
+        const duration = effective.cues.reduce(
+          (total, cue) => total + cue.duration,
+          0,
+        );
+        return {
+          scene: effective.scene,
+          active: effective.scene.id === this.activeSceneId,
+          act: effective.scene.act,
+          name: effective.scene.name,
+          title: effective.scene.title,
+          startTime: effective.scene.startTime,
+          cueCount,
+          duration,
+          templateName,
+          stale,
+          version: effective.scene.templateVersion,
+          current: effective.template?.currentVersion,
+          issueCount: this.issues.filter(
+            (issue) => issue.sceneId === effective.scene.id,
+          ).length,
+          match:
+            !term ||
+            `${effective.scene.act}${effective.scene.name}${effective.scene.title}${templateName}`
+              .toLowerCase()
+              .includes(term),
+        };
+      })
+      .filter((row) => row.match);
+  }
+
+  get cueRows() {
+    const effective = this.activeEffective;
+    if (!effective) return [];
+    return effective.cues.map((cue, index) => ({
+      key: cue.key,
+      index,
+      kind: cue.kind,
+      title: cue.title,
+      duration: cue.duration,
+      owner: cue.owner,
+      kindClass: this.kindClass(cue.kind),
+      selected: cue.key === this.selectedCueKey,
+      overridden: cue.overriddenFields.length > 0,
+      overriddenLabel: cue.overriddenFields.length
+        ? `本场已覆盖 ${cue.overriddenFields.length} 项`
+        : '继承模板',
+      hasIssue: this.issues.some(
+        (issue) =>
+          issue.cueKey === cue.key && issue.sceneId === effective.scene.id,
+      ),
+      propsLabel: cue.props.join('、'),
+      castLabel: cue.cast.join('、'),
+      start: timeLabel(effective.scene.startTime, cue.offset),
+      end: timeLabel(effective.scene.startTime, cue.offset + cue.duration),
+    }));
+  }
+
+  // ---------- 模板 ----------
+  get activeTemplate(): ShowTemplate | undefined {
+    return findTemplate(this.book, this.activeTemplateId);
+  }
+
+  get currentTemplateVersion() {
+    return this.activeTemplate ? findVersion(this.activeTemplate) : undefined;
+  }
+
+  get templateRows() {
+    return this.book.templates.map((template) => ({
+      id: template.id,
+      active: template.id === this.activeTemplateId,
+      name: template.name,
+      version: template.currentVersion,
+      cueCount: findVersion(template)?.cues.length ?? 0,
+      sceneCount: this.book.scenes.filter(
+        (scene) => scene.templateId === template.id,
+      ).length,
+    }));
+  }
+
+  get templateDraftRows() {
+    return this.templateDraftCues.map((cue, index) => ({
+      key: cue.key,
+      index,
+      kind: cue.kind,
+      title: cue.title,
+      duration: cue.duration,
+      owner: cue.owner || '待指定',
+      kindClass: this.kindClass(cue.kind),
+      selected: this.templateCueDraft?.key === cue.key,
+    }));
+  }
+
+  get templateVersionRows() {
+    return [...(this.activeTemplate?.versions ?? [])]
+      .sort((a, b) => b.version - a.version)
+      .map((version) => ({
+        version: version.version,
+        note: version.note,
+        createdAt: version.createdAt.slice(0, 16).replace('T', ' '),
+        current: version.version === this.activeTemplate?.currentVersion,
+        cueCount: version.cues.length,
+      }));
+  }
+
+  get templateDirty(): boolean {
+    const current = this.currentTemplateVersion;
+    if (!current) return this.templateDraftCues.length > 0;
+    if (current.cues.length !== this.templateDraftCues.length) return true;
+    return current.cues.some((cue, index) => {
+      const draft = this.templateDraftCues[index];
+      if (!draft || draft.key !== cue.key) return true;
+      return (
+        JSON.stringify(this.comparableCue(cue)) !==
+        JSON.stringify(this.comparableCue(draft))
+      );
     });
-
-    const allCues = this.allCues;
-    for (let index = 0; index < allCues.length; index += 1) {
-      for (let next = index + 1; next < allCues.length; next += 1) {
-        const left = allCues[index]!;
-        const right = allCues[next]!;
-        if (left.cue.id === right.cue.id || left.scene.id === right.scene.id) continue;
-        const leftStart = startSeconds(left.scene.startTime) + left.cue.offset;
-        const rightStart = startSeconds(right.scene.startTime) + right.cue.offset;
-        if (!overlaps(leftStart, left.cue.duration, rightStart, right.cue.duration)) continue;
-        const sharedProps = left.cue.props.filter((value) => right.cue.props.includes(value));
-        const sharedCast = left.cue.cast.filter((value) => right.cue.cast.includes(value));
-        if (sharedProps.length) {
-          issues.push({ id: `prop-${left.cue.id}-${right.cue.id}`, severity: 'warning', title: '道具撞场', detail: `「${left.cue.title}」与「${right.cue.title}」同时使用：${sharedProps.join('、')}。`, sceneId: right.scene.id, cueId: right.cue.id });
-        }
-        if (sharedCast.length) {
-          issues.push({ id: `cast-${left.cue.id}-${right.cue.id}`, severity: 'warning', title: '演员撞场', detail: `「${left.cue.title}」与「${right.cue.title}」同时需要：${sharedCast.join('、')}。`, sceneId: right.scene.id, cueId: right.cue.id });
-        }
-      }
-    }
-    return issues.map((issue) => ({ ...issue, icon: issue.severity === 'error' ? '!' : 'i' }));
   }
 
-  get selectedProps(): string {
-    return this.selectedCue?.props.join('、') ?? '';
+  get templateClean(): boolean {
+    return !this.templateDirty;
   }
 
-  get selectedCast(): string {
-    return this.selectedCue?.cast.join('、') ?? '';
+  private comparableCue(cue: TemplateCue | TemplateCue) {
+    return {
+      key: cue.key,
+      kind: cue.kind,
+      title: cue.title,
+      duration: cue.duration,
+      owner: cue.owner,
+      lighting: cue.lighting,
+      sound: cue.sound,
+      props: [...cue.props],
+      cast: [...cue.cast],
+      notes: cue.notes,
+      dependsOnKeys: [...cue.dependsOnKeys],
+    };
+  }
+
+  // ---------- 复制新场次 ----------
+  // 打开面板时生成一次并缓存，保证 options 与 @selected 引用同一批对象
+  // （ember-power-select 用引用相等判断选中项）。
+  @tracked copyTemplateOptions: { id: string; label: string }[] = [];
+
+  get copyTemplateSelection() {
+    return this.copyTemplateOptions.find(
+      (option) => option.id === this.copyTemplateId,
+    );
+  }
+
+  // ---------- 校验 ----------
+  get issues() {
+    return collectIssues(this.book);
   }
 
   get errors(): number {
     return this.issues.filter((issue) => issue.severity === 'error').length;
   }
 
+  get pendingJobs(): ApplyJob[] {
+    return this.jobs.filter((job) => job.status !== 'succeeded');
+  }
+
+  get totalCueCount(): number {
+    return this.effectiveScenesView.reduce(
+      (total, effective) => total + effective.cues.length,
+      0,
+    );
+  }
+
+  // ---------- 版本比较 ----------
   get compareVersion(): VersionSnapshot | undefined {
-    return this.versions.find((version) => version.id === this.compareVersionId);
+    return this.versions.find(
+      (version) => version.id === this.compareVersionId,
+    );
   }
 
   get versionDiff(): VersionDiff[] {
-    const version = this.compareVersion;
-    if (!version) return [];
-    const before = version.data.scenes.flatMap((scene) => scene.cues.map((item) => `${scene.act}/${scene.name} · ${item.title} | ${item.owner || '未指定'} | ${item.duration}s`));
-    const after = this.show.scenes.flatMap((scene) => scene.cues.map((item) => `${scene.act}/${scene.name} · ${item.title} | ${item.owner || '未指定'} | ${item.duration}s`));
-    return Array.from({ length: Math.max(before.length, after.length) }, (_, index) => ({
-      id: `diff-${index}`,
-      changed: before[index] !== after[index],
-      label: `提示 ${index + 1}`,
-      before: before[index] ?? '—',
-      after: after[index] ?? '—',
-    }));
+    const snapshot = this.compareVersion;
+    if (!snapshot) return [];
+    const line = (book: CueBook) =>
+      effectiveScenes(book).flatMap((effective) =>
+        effective.cues.map(
+          (cue) =>
+            `${effective.scene.act}/${effective.scene.name} · ${cue.title} | ${cue.owner || '未指定'} | ${cue.duration}s`,
+        ),
+      );
+    const before = line(snapshot.book);
+    const after = line(this.book);
+    return Array.from(
+      { length: Math.max(before.length, after.length) },
+      (_, index) => ({
+        id: `diff-${index}`,
+        changed: before[index] !== after[index],
+        label: `提示 ${index + 1}`,
+        before: before[index] ?? '—',
+        after: after[index] ?? '—',
+      }),
+    );
   }
 
-  get filteredScenes() {
-    const term = this.search.trim().toLowerCase();
-    return this.sceneRows.filter((scene) => !term || `${scene.act}${scene.name}${scene.title}`.toLowerCase().includes(term));
+  get selectedProps(): string {
+    return this.selectedCue?.props.join('、') ?? '';
+  }
+  get selectedCast(): string {
+    return this.selectedCue?.cast.join('、') ?? '';
+  }
+
+  private kindClass(kind: CueKind): string {
+    return kind === '灯光'
+      ? 'light'
+      : kind === '音响'
+        ? 'sound'
+        : kind === '道具'
+          ? 'prop'
+          : kind === '演员'
+            ? 'cast'
+            : kind === '字幕'
+              ? 'caption'
+              : 'stage';
+  }
+
+  // ---------- 视图切换 ----------
+  @action
+  switchMode(mode: ViewMode): void {
+    this.mode = mode;
+    this.sceneCueDraft = null;
+    this.templateCueDraft = null;
+    if (mode === 'template' && this.activeTemplate)
+      this.loadTemplateDraft(this.activeTemplate);
   }
 
   @action
   selectScene(id: string): void {
     this.activeSceneId = id;
-    this.selectedCueId = this.activeScene?.cues[0]?.id ?? '';
-    this.draft = null;
+    this.selectedCueKey = this.activeEffective?.cues[0]?.key ?? '';
+    this.sceneCueDraft = null;
   }
 
   @action
-  selectCue(id: string): void {
-    this.selectedCueId = id;
-    this.draft = null;
+  selectCue(key: string): void {
+    this.selectedCueKey = key;
+    this.sceneCueDraft = null;
   }
 
   @action
-  updateShowTitle(value: string): void {
-    this.mutate((show) => {
-      show.title = value;
+  selectTemplate(id: string): void {
+    this.activeTemplateId = id;
+    const template = findTemplate(this.book, id);
+    if (template) this.loadTemplateDraft(template);
+    this.templateCueDraft = null;
+  }
+
+  private loadTemplateDraft(template: ShowTemplate): void {
+    const version = findVersion(template);
+    this.templateDraftCues = (version?.cues ?? []).map((cue) => ({
+      ...cue,
+      props: [...cue.props],
+      cast: [...cue.cast],
+      dependsOnKeys: [...cue.dependsOnKeys],
+    }));
+    this.templateNameDraft = template.name;
+    this.templateDescriptionDraft = template.description;
+  }
+
+  // ---------- 演出级 ----------
+  @action
+  updateBookField(field: 'title' | 'venue' | 'date', value: string): void {
+    this.commit((book) => {
+      book[field] = value;
     });
   }
 
+  // ---------- 场次字段 ----------
   @action
-  createCueDraft(kind: CueKind = '灯光'): void {
-    if (this.activeScene?.locked) {
-      this.notify('该场次已锁定，请先建立修订');
-      return;
-    }
-    this.draft = { kind, title: '', duration: 60, owner: '', lighting: '', sound: '', props: '', cast: '', notes: '', dependsOn: '' };
-  }
-
-  @action
-  cancelDraft(): void {
-    this.draft = null;
-  }
-
-  @action
-  editSelectedCue(): void {
-    const item = this.selectedCue;
-    if (!item || this.activeScene?.locked) return;
-    this.draft = {
-      id: item.id,
-      kind: item.kind,
-      title: item.title,
-      duration: item.duration,
-      owner: item.owner,
-      lighting: item.lighting,
-      sound: item.sound,
-      props: item.props.join('、'),
-      cast: item.cast.join('、'),
-      notes: item.notes,
-      dependsOn: item.dependsOn.join('、'),
-    };
-  }
-
-  @action
-  updateDraft<K extends keyof CueDraft>(field: K, value: CueDraft[K]): void {
-    if (this.draft) this.draft = { ...this.draft, [field]: value };
-  }
-
-  @action
-  saveDraft(): void {
-    if (!this.draft || !this.draft.title.trim() || !this.activeScene) return;
-    const draft = this.draft;
-    this.mutate((show) => {
-      const scene = show.scenes.find((item) => item.id === this.activeSceneId);
-      if (!scene) return;
-      const saved: Cue = {
-        id: draft.id ?? uid('cue'),
-        kind: draft.kind,
-        title: draft.title.trim(),
-        duration: Math.max(1, Number(draft.duration) || 1),
-        owner: draft.owner,
-        lighting: draft.lighting,
-        sound: draft.sound,
-        props: draft.props.split(/[、,，]/).map((value) => value.trim()).filter(Boolean),
-        cast: draft.cast.split(/[、,，]/).map((value) => value.trim()).filter(Boolean),
-        notes: draft.notes,
-        dependsOn: draft.dependsOn.split(/[、,，]/).map((value) => value.trim()).filter(Boolean),
-        offset: 0,
-      };
-      const index = scene.cues.findIndex((item) => item.id === saved.id);
-      if (index >= 0) scene.cues.splice(index, 1, saved);
-      else scene.cues.push(saved);
-      recalculateScene(scene);
-      this.selectedCueId = saved.id;
-    });
-    this.draft = null;
-  }
-
-  @action
-  removeCue(id: string): void {
-    this.mutate((show) => {
-      const scene = show.scenes.find((item) => item.id === this.activeSceneId);
-      if (!scene || scene.locked) return;
-      scene.cues = scene.cues.filter((item) => item.id !== id);
-      recalculateScene(scene);
-    });
-    this.selectedCueId = this.activeScene?.cues[0]?.id ?? '';
-  }
-
-  @action
-  addScene(): void {
-    const scene: Scene = {
-      id: uid('scene'),
-      act: `第${this.show.scenes.length + 1}幕`,
-      name: `S${this.show.scenes.length + 1}`,
-      title: '未命名场次',
-      startTime: '20:00',
-      locked: false,
-      cues: [],
-    };
-    this.mutate((show) => show.scenes.push(scene));
-    this.activeSceneId = scene.id;
-    this.selectedCueId = '';
-  }
-
-  @action
-  copyPreviousScene(): void {
-    const index = this.show.scenes.findIndex((scene) => scene.id === this.activeSceneId);
-    const previous = this.show.scenes[index - 1];
-    if (!previous) {
-      this.notify('当前已是第一场');
-      return;
-    }
-    const copied: Scene = clone(previous);
-    copied.id = uid('scene');
-    copied.act = this.activeScene?.act ?? copied.act;
-    copied.name = `${copied.name}-副本`;
-    copied.title = `${copied.title}（复制）`;
-    copied.cues = copied.cues.map((item) => ({ ...item, id: uid('cue'), dependsOn: [] }));
-    recalculateScene(copied);
-    this.mutate((show) => show.scenes.splice(index + 1, 0, copied));
-    this.activeSceneId = copied.id;
-    this.selectedCueId = copied.cues[0]?.id ?? '';
-    this.notify('已复制上一场流程');
-  }
-
-  @action
-  updateSceneField(field: 'title' | 'startTime' | 'act' | 'name', value: string): void {
-    this.mutate((show) => {
-      const scene = show.scenes.find((item) => item.id === this.activeSceneId);
+  updateSceneField(
+    field: 'act' | 'name' | 'title' | 'startTime',
+    value: string,
+  ): void {
+    this.commit((book) => {
+      const scene = book.scenes.find((item) => item.id === this.activeSceneId);
       if (scene && !scene.locked) scene[field] = value;
     });
   }
 
   @action
-  updateSelectedField(field: keyof Cue, value: unknown): void {
-    const id = this.selectedCueId;
-    this.mutate((show) => {
-      const scene = show.scenes.find((item) => item.id === this.activeSceneId);
-      const item = scene?.cues.find((entry) => entry.id === id);
-      if (!scene || !item || scene.locked) return;
-      if (field === 'duration') item.duration = Math.max(1, Number(value) || 1);
-      else if (field === 'props' || field === 'cast') item[field] = String(value).split(/[、,，]/).map((entry) => entry.trim()).filter(Boolean);
-      else Object.assign(item, { [field]: value });
-      recalculateScene(scene);
+  toggleSceneLock(): void {
+    this.commit((book) => {
+      const scene = book.scenes.find((item) => item.id === this.activeSceneId);
+      if (scene) scene.locked = !scene.locked;
     });
   }
 
   @action
-  moveSelected(direction: -1 | 1): void {
-    const cues = this.activeScene?.cues ?? [];
-    const from = cues.findIndex((item) => item.id === this.selectedCueId);
-    const to = from + direction;
-    if (from < 0 || to < 0 || to >= cues.length) return;
-    this.moveCue(cues[from]!.id, cues[to]!.id);
+  addScene(): void {
+    const template = this.book.templates[0];
+    if (!template) {
+      this.notify('请先创建模板');
+      return;
+    }
+    this.openCopyPanel(template.id);
+  }
+
+  // ---------- 场次提示覆盖 ----------
+  @action
+  createSceneCueDraft(kind: CueKind = '灯光'): void {
+    const effective = this.activeEffective;
+    if (!effective || effective.scene.locked) {
+      this.notify('该场次已锁定或模板缺失');
+      return;
+    }
+    const draft = blankTemplateCue();
+    draft.kind = kind;
+    this.sceneCueDraft = draft;
   }
 
   @action
-  startDrag(id: string): void {
-    this.dragCueId = id;
+  editSelectedSceneCue(): void {
+    const cue = this.selectedCue;
+    if (!cue || this.activeEffective?.scene.locked) return;
+    this.sceneCueDraft = {
+      key: cue.key,
+      kind: cue.kind,
+      title: cue.title,
+      duration: cue.duration,
+      owner: cue.owner,
+      lighting: cue.lighting,
+      sound: cue.sound,
+      props: cue.props.join('、'),
+      cast: cue.cast.join('、'),
+      notes: cue.notes,
+      dependsOnKeys: cue.dependsOnKeys.join('、'),
+    };
   }
 
   @action
-  allowDrop(event: DragEvent): boolean {
+  updateSceneDraft<K extends keyof SceneDraftCue>(
+    field: K,
+    value: SceneDraftCue[K],
+  ): void {
+    if (this.sceneCueDraft)
+      this.sceneCueDraft = { ...this.sceneCueDraft, [field]: value };
+  }
+
+  @action
+  cancelSceneDraft(): void {
+    this.sceneCueDraft = null;
+  }
+
+  @action
+  saveSceneCueDraft(): void {
+    const effective = this.activeEffective;
+    const draft = this.sceneCueDraft;
+    if (!effective || !draft) return;
+    const base = effective.version?.cues.find((cue) => cue.key === draft.key);
+    if (!base) {
+      this.notify('该提示不属于当前模板版本，无法保存覆盖');
+      return;
+    }
+    if (!draft.title.trim()) {
+      this.notify('请填写提示标题');
+      return;
+    }
+    const values: CueFieldValues = {
+      kind: draft.kind,
+      title: draft.title.trim(),
+      duration: Math.max(1, Number(draft.duration) || 1),
+      owner: draft.owner,
+      lighting: draft.lighting,
+      sound: draft.sound,
+      props: splitList(draft.props),
+      cast: splitList(draft.cast),
+      notes: draft.notes,
+    };
+    // 依赖顺序归模板所有，场次不单独改；草稿里只读展示。
+    const override = buildOverride(base, values);
+    this.commit((book) => {
+      const scene = book.scenes.find((item) => item.id === effective.scene.id);
+      if (!scene || scene.locked) return;
+      scene.cueOverrides = scene.cueOverrides.filter(
+        (item) => item.key !== base.key,
+      );
+      if (override) scene.cueOverrides.push(override);
+    });
+    this.sceneCueDraft = null;
+    this.selectedCueKey = draft.key;
+  }
+
+  @action
+  resetSceneCueOverride(key: string): void {
+    this.commit((book) => {
+      const scene = book.scenes.find((item) => item.id === this.activeSceneId);
+      if (scene && !scene.locked) {
+        scene.cueOverrides = scene.cueOverrides.filter(
+          (item) => item.key !== key,
+        );
+      }
+    });
+  }
+
+  // ---------- 模板编辑（工作副本，发布才生成新版本） ----------
+  @action
+  updateTemplateNameDraft(value: string): void {
+    this.templateNameDraft = value;
+  }
+
+  @action
+  saveTemplateMeta(): void {
+    const template = this.activeTemplate;
+    if (!template) return;
+    this.commit((book) => {
+      const target = book.templates.find((item) => item.id === template.id);
+      if (!target) return;
+      const updated = updateTemplateMeta(target, {
+        name: this.templateNameDraft.trim() || target.name,
+        description: this.templateDescriptionDraft,
+      });
+      Object.assign(target, updated);
+    });
+    this.notify('模板信息已保存（不影响场次解析）');
+  }
+
+  @action
+  createTemplateCueDraft(kind: CueKind = '灯光'): void {
+    this.templateCueDraft = { ...blankTemplateCue(), kind };
+  }
+
+  @action
+  editTemplateCue(key: string): void {
+    const cue = this.templateDraftCues.find((item) => item.key === key);
+    if (cue) this.templateCueDraft = toDraftCue(cue);
+  }
+
+  @action
+  updateTemplateDraftCue<K extends keyof TemplateDraftCue>(
+    field: K,
+    value: TemplateDraftCue[K],
+  ): void {
+    if (this.templateCueDraft)
+      this.templateCueDraft = { ...this.templateCueDraft, [field]: value };
+  }
+
+  @action
+  cancelTemplateCueDraft(): void {
+    this.templateCueDraft = null;
+  }
+
+  @action
+  saveTemplateCueDraft(): void {
+    const draft = this.templateCueDraft;
+    if (!draft) return;
+    if (!draft.title.trim()) {
+      this.notify('请填写提示标题');
+      return;
+    }
+    const cue = draftToTemplateCue({
+      key: draft.key,
+      kind: draft.kind,
+      title: draft.title,
+      duration: Number(draft.duration) || 1,
+      owner: draft.owner,
+      lighting: draft.lighting,
+      sound: draft.sound,
+      props: splitList(draft.props),
+      cast: splitList(draft.cast),
+      notes: draft.notes,
+      dependsOnKeys: splitList(draft.dependsOnKeys),
+    });
+    this.templateDraftCues = upsertTemplateCue(this.templateDraftCues, cue);
+    this.templateCueDraft = null;
+  }
+
+  @action
+  removeTemplateCueDraft(key: string): void {
+    this.templateDraftCues = removeTemplateCue(this.templateDraftCues, key);
+    if (this.templateCueDraft?.key === key) this.templateCueDraft = null;
+  }
+
+  @action
+  selectTemplateDraftCue(key: string): void {
+    const cue = this.templateDraftCues.find((item) => item.key === key);
+    if (cue) this.templateCueDraft = toDraftCue(cue);
+  }
+
+  @action
+  startTemplateDrag(key: string): void {
+    this.dragKey = key;
+  }
+
+  @action
+  allowTemplateDrop(event: DragEvent): boolean {
     event.preventDefault();
     return false;
   }
 
   @action
-  dropOn(id: string): void {
-    if (this.dragCueId) this.moveCue(this.dragCueId, id);
-    this.dragCueId = '';
+  dropTemplateOn(key: string): void {
+    if (this.dragKey) {
+      this.templateDraftCues = moveTemplateCue(
+        this.templateDraftCues,
+        this.dragKey,
+        key,
+      );
+    }
+    this.dragKey = '';
   }
 
   @action
-  moveCue(sourceId: string, targetId: string): void {
-    if (sourceId === targetId) return;
-    this.mutate((show) => {
-      const scene = show.scenes.find((item) => item.id === this.activeSceneId);
-      if (!scene || scene.locked) return;
-      const from = scene.cues.findIndex((item) => item.id === sourceId);
-      const to = scene.cues.findIndex((item) => item.id === targetId);
-      if (from < 0 || to < 0) return;
-      const [moved] = scene.cues.splice(from, 1);
-      scene.cues.splice(to, 0, moved!);
-      recalculateScene(scene);
-    });
-    this.selectedCueId = sourceId;
-    this.notify('顺序已更新，后续提示时间自动顺延');
+  updateVersionNote(value: string): void {
+    this.versionNote = value;
   }
 
+  @action
+  updateTemplateDescriptionDraft(value: string): void {
+    this.templateDescriptionDraft = value;
+  }
+
+  // PaperSelect（ember-power-select）回传整个 option 对象，这里适配为标量字段。
+  @action
+  selectTemplateCueKind(value: CueKind | { kind?: unknown }): void {
+    if (this.templateCueDraft)
+      this.templateCueDraft = {
+        ...this.templateCueDraft,
+        kind: value as CueKind,
+      };
+  }
+
+  @action
+  selectTemplateCueOwner(value: string): void {
+    if (this.templateCueDraft)
+      this.templateCueDraft = { ...this.templateCueDraft, owner: value };
+  }
+
+  @action
+  selectSceneCueKind(value: CueKind): void {
+    if (this.sceneCueDraft)
+      this.sceneCueDraft = { ...this.sceneCueDraft, kind: value };
+  }
+
+  @action
+  selectSceneCueOwner(value: string): void {
+    if (this.sceneCueDraft)
+      this.sceneCueDraft = { ...this.sceneCueDraft, owner: value };
+  }
+
+  @action
+  selectCopyTemplate(option: { id: string } | string): void {
+    this.copyTemplateId = typeof option === 'string' ? option : option.id;
+  }
+
+  @action
+  selectCompareVersion(option: VersionSnapshot | string): void {
+    this.compareVersionId = typeof option === 'string' ? option : option.id;
+  }
+
+  @action
+  publishTemplate(): void {
+    const template = this.activeTemplate;
+    if (!template) return;
+    if (!this.templateDirty) {
+      this.notify('与当前版本一致，无需发布');
+      return;
+    }
+    const note =
+      this.versionNote.trim() || `v${template.currentVersion + 1} 调整`;
+    this.commit((book) => {
+      const target = book.templates.find((item) => item.id === template.id);
+      if (!target) return;
+      const published = publishTemplateVersion(
+        target,
+        this.templateDraftCues,
+        note,
+      );
+      Object.assign(target, published);
+    });
+    const refreshed = findTemplate(this.book, template.id);
+    if (refreshed) this.loadTemplateDraft(refreshed);
+    this.versionNote = '';
+    this.templateCueDraft = null;
+    this.notify(
+      `已发布模板 v${template.currentVersion + 1}；旧场次保留旧版本，可逐一迁移`,
+    );
+  }
+
+  @action
+  discardTemplateDraft(): void {
+    if (this.activeTemplate) this.loadTemplateDraft(this.activeTemplate);
+    this.templateCueDraft = null;
+    this.notify('已放弃未发布的模板改动');
+  }
+
+  @action
+  createTemplate(): void {
+    const id = uid('template');
+    const stamp = new Date().toISOString();
+    const template: ShowTemplate = {
+      id,
+      name: '新模板',
+      description: '',
+      currentVersion: 1,
+      versions: [{ version: 1, createdAt: stamp, note: '创建', cues: [] }],
+      createdAt: stamp,
+      updatedAt: stamp,
+    };
+    this.commit((book) => {
+      book.templates.push(template);
+    });
+    this.activeTemplateId = id;
+    this.loadTemplateDraft(template);
+    this.mode = 'template';
+  }
+
+  // ---------- 复制新场次（选模板 -> 事务套用，失败回滚/可续处理） ----------
+  @action
+  openCopyPanel(templateId?: string): void {
+    const count = this.book.scenes.length + 1;
+    this.copyTemplateId =
+      templateId ?? this.activeTemplateId ?? this.book.templates[0]?.id ?? '';
+    this.copyName = `S${count}`;
+    this.copyTitle = `第 ${count} 站`;
+    this.copyStartTime = '20:00';
+    this.copyTemplateOptions = this.book.templates.map((template) => ({
+      id: template.id,
+      label: `${template.name}（v${template.currentVersion} · ${findVersion(template)?.cues.length ?? 0} 条提示）`,
+    }));
+    this.showCopyPanel = true;
+  }
+
+  @action
+  closeCopyPanel(): void {
+    this.showCopyPanel = false;
+  }
+
+  @action
+  updateCopyField(
+    field: 'copyTemplateId' | 'copyName' | 'copyTitle' | 'copyStartTime',
+    value: string,
+  ): void {
+    this[field] = value;
+  }
+
+  @action
+  confirmCopyScene(): void {
+    const template = findTemplate(this.book, this.copyTemplateId);
+    if (!template) {
+      this.notify('请选择有效的模板');
+      return;
+    }
+    const job = createSceneJob(template.id, template.currentVersion, {
+      act:
+        this.activeEffective?.scene.act ?? `第${this.book.scenes.length + 1}幕`,
+      name: this.copyName.trim() || `S${this.book.scenes.length + 1}`,
+      title: this.copyTitle.trim() || '未命名场次',
+      startTime: this.copyStartTime || '20:00',
+      // 新场次从零开始：不携带任何其他场次的覆盖，从模板干净继承。
+      cueOverrides: [],
+    });
+    this.runJob(job);
+    this.showCopyPanel = false;
+  }
+
+  // ---------- 升级场次到模板新版本 ----------
+  @action
+  upgradeActiveScene(): void {
+    const effective = this.activeEffective;
+    if (!effective?.template) return;
+    const job = upgradeSceneJob(
+      effective.scene.id,
+      effective.template.id,
+      effective.template.currentVersion,
+    );
+    this.runJob(job);
+  }
+
+  // ---------- 作业执行 / 失败处理 / 重开续处理 ----------
+  private runJob(job: ApplyJob): void {
+    this.persistJobs([...this.jobs, job]);
+    let result: ReturnType<typeof applyJob>;
+    try {
+      // applyJob 在内部深拷贝上构造结果；抛错时 this.book 完全不变 = 回滚。
+      result = applyJob(this.book, job);
+    } catch (error) {
+      const failed = failJob(job, error);
+      this.persistJobs(
+        this.jobs.map((item) => (item.id === failed.id ? failed : item)),
+      );
+      this.jobs = [
+        ...this.jobs.map((item) => (item.id === failed.id ? failed : item)),
+      ];
+      this.notify(
+        `套用失败已回滚：${failed.error}（可在上方「待处理套用」继续）`,
+      );
+      return;
+    }
+    // 成功：新 book 与「移除该作业」一次性原子写入。
+    const remaining = this.jobs.filter((item) => item.id !== result.job.id);
+    this.applyBook(result.book, {
+      pushUndo: true,
+      clearRedo: true,
+      jobs: remaining,
+    });
+    if (job.kind === 'create-scene') {
+      this.activeSceneId = result.job.sceneId;
+      this.selectedCueKey = this.activeEffective?.cues[0]?.key ?? '';
+    }
+    this.notify(
+      job.kind === 'create-scene'
+        ? '已按模板创建新场次'
+        : '场次已迁移到模板新版本',
+    );
+  }
+
+  @action
+  continueJob(jobId: string): void {
+    const job = this.jobs.find((item) => item.id === jobId);
+    if (!job) return;
+    this.runJob(resumeJob(job));
+  }
+
+  @action
+  discardJob(jobId: string): void {
+    const remaining = this.jobs.filter((item) => item.id !== jobId);
+    this.jobs = remaining;
+    this.persistJobs(remaining);
+    this.notify('已移除该待处理套用（原场次与模板均未改动）');
+  }
+
+  // ---------- 孤立覆盖处理 ----------
+  @action
+  dropOrphanOverride(key: string): void {
+    this.commit((book) => {
+      const scene = book.scenes.find((item) => item.id === this.activeSceneId);
+      if (!scene) return;
+      scene.cueOverrides = scene.cueOverrides.filter(
+        (item) => item.key !== key,
+      );
+      scene.migrationWarnings = scene.migrationWarnings.filter(
+        (warning) => !warning.includes(key),
+      );
+    });
+  }
+
+  @action
+  clearMigrationWarnings(): void {
+    this.commit((book) => {
+      const scene = book.scenes.find((item) => item.id === this.activeSceneId);
+      if (scene) scene.migrationWarnings = [];
+    });
+  }
+
+  // ---------- 锁定版本 ----------
   @action
   lockVersion(): void {
     const snapshot: VersionSnapshot = {
       id: uid('version'),
       name: `锁定版 ${this.versions.length + 1}`,
       createdAt: new Date().toISOString(),
-      data: clone(this.show),
+      book: clone(this.book),
     };
     this.versions = [snapshot, ...this.versions];
     this.compareVersionId = snapshot.id;
-    this.persist();
+    this.persistState(this.jobs);
     this.notify('已锁定当前版本');
-  }
-
-  @action
-  createRevision(): void {
-    this.mutate((show) => show.scenes.forEach((scene) => { scene.locked = false; }));
-    this.notify('已从当前锁定版建立可编辑修订');
-  }
-
-  @action
-  toggleSceneLock(): void {
-    this.mutate((show) => {
-      const scene = show.scenes.find((item) => item.id === this.activeSceneId);
-      if (scene) scene.locked = !scene.locked;
-    });
-  }
-
-  @action
-  undo(): void {
-    const previous = this.undoStack.pop();
-    if (!previous) return;
-    this.redoStack.push(clone(this.show));
-    this.show = previous;
-    this.ensureSelection();
-    this.persist();
-  }
-
-  @action
-  redo(): void {
-    const next = this.redoStack.pop();
-    if (!next) return;
-    this.undoStack.push(clone(this.show));
-    this.show = next;
-    this.ensureSelection();
-    this.persist();
   }
 
   @action
@@ -504,9 +937,23 @@ export default class CueEditorComponent extends Component {
     this.search = value;
   }
 
+  // ---------- 撤销 / 重做 ----------
   @action
-  selectCompareVersion(version: VersionSnapshot): void {
-    this.compareVersionId = version.id;
+  undo(): void {
+    const previous = this.undoStack.pop();
+    if (!previous) return;
+    this.redoStack.push(clone(this.book));
+    this.applyBook(previous, { pushUndo: false, clearRedo: false });
+    this.afterBookChange();
+  }
+
+  @action
+  redo(): void {
+    const next = this.redoStack.pop();
+    if (!next) return;
+    this.undoStack.push(clone(this.book));
+    this.applyBook(next, { pushUndo: false, clearRedo: false });
+    this.afterBookChange();
   }
 
   willDestroy(): void {
@@ -514,37 +961,7 @@ export default class CueEditorComponent extends Component {
     window.removeEventListener('keydown', this.handleKeyboard);
   }
 
-  private mutate(mutator: (show: ShowData) => void): void {
-    this.undoStack.push(clone(this.show));
-    if (this.undoStack.length > 80) this.undoStack.shift();
-    this.redoStack = [];
-    const next = clone(this.show);
-    mutator(next);
-    next.updatedAt = new Date().toISOString();
-    this.show = next;
-    this.ensureSelection();
-    this.persist();
-  }
-
-  private ensureSelection(): void {
-    if (!this.show.scenes.some((scene) => scene.id === this.activeSceneId)) this.activeSceneId = this.show.scenes[0]?.id ?? '';
-    if (!this.activeScene?.cues.some((item) => item.id === this.selectedCueId)) this.selectedCueId = this.activeScene?.cues[0]?.id ?? '';
-  }
-
-  private persist(): void {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ show: this.show, versions: this.versions }));
-  }
-
-  private notify(value: string): void {
-    this.message = value;
-    window.setTimeout(() => {
-      if (this.message === value) this.message = '';
-    }, 2200);
-  }
-
   private handleKeyboard = (event: KeyboardEvent): void => {
-    const target = event.target as HTMLElement | null;
-    const inEditor = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.tagName === 'SELECT';
     const command = event.ctrlKey || event.metaKey;
     if (command && event.key.toLowerCase() === 'z') {
       event.preventDefault();
@@ -554,18 +971,66 @@ export default class CueEditorComponent extends Component {
     if (command && event.key.toLowerCase() === 'y') {
       event.preventDefault();
       this.redo();
-      return;
-    }
-    if (inEditor) return;
-    if (event.altKey && event.key === 'ArrowUp') {
-      event.preventDefault();
-      this.moveSelected(-1);
-    } else if (event.altKey && event.key === 'ArrowDown') {
-      event.preventDefault();
-      this.moveSelected(1);
-    } else if (event.key.toLowerCase() === 'n') {
-      event.preventDefault();
-      this.createCueDraft();
     }
   };
+
+  // ---------- 状态提交 / 持久化 ----------
+  private commit(mutator: (book: CueBook) => void): void {
+    const next = clone(this.book);
+    mutator(next);
+    next.updatedAt = new Date().toISOString();
+    this.applyBook(next, { pushUndo: true, clearRedo: true });
+  }
+
+  private applyBook(
+    book: CueBook,
+    options: { pushUndo: boolean; clearRedo: boolean; jobs?: ApplyJob[] },
+  ): void {
+    if (options.pushUndo) {
+      this.undoStack.push(clone(this.book));
+      if (this.undoStack.length > 80) this.undoStack.shift();
+    }
+    if (options.clearRedo) this.redoStack = [];
+    this.book = book;
+    this.afterBookChange();
+    // book 与 jobs 一次性原子写入，避免「新 book 已落盘、已完成作业仍在」造成重开后重复套用。
+    this.persistState(options.jobs ?? this.jobs);
+  }
+
+  private afterBookChange(): void {
+    if (!this.book.scenes.some((scene) => scene.id === this.activeSceneId)) {
+      this.activeSceneId = this.book.scenes[0]?.id ?? '';
+    }
+    const effective = this.activeEffective;
+    if (
+      effective &&
+      !effective.cues.some((cue) => cue.key === this.selectedCueKey)
+    ) {
+      this.selectedCueKey = effective.cues[0]?.key ?? '';
+    }
+    if (
+      !this.book.templates.some(
+        (template) => template.id === this.activeTemplateId,
+      )
+    ) {
+      this.activeTemplateId = this.book.templates[0]?.id ?? '';
+    }
+  }
+
+  private persistState(jobs: ApplyJob[]): void {
+    this.jobs = jobs;
+    saveState({ book: this.book, versions: this.versions, jobs });
+  }
+
+  private persistJobs(jobs: ApplyJob[]): void {
+    this.jobs = jobs;
+    saveState({ book: this.book, versions: this.versions, jobs });
+  }
+
+  private notify(value: string): void {
+    this.message = value;
+    window.setTimeout(() => {
+      if (this.message === value) this.message = '';
+    }, 2600);
+  }
 }

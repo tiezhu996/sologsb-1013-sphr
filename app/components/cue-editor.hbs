@@ -4,181 +4,375 @@
       <span class="brand-mark">CUE</span>
       <div>
         <small>STAGE CALL &amp; PROMPT BOOK</small>
-        <h1>{{this.show.title}}</h1>
+        <h1>{{this.book.title}}</h1>
       </div>
     </div>
     <div class="header-meta">
-      <span>{{this.show.venue}}</span>
-      <span>{{this.show.date}}</span>
+      <span>{{this.book.venue}}</span>
+      <span>{{this.book.date}}</span>
       <span class={{if this.errors "status-error" "status-ok"}}>{{if this.errors (concat this.errors " 项需处理") "当前无硬性冲突"}}</span>
     </div>
     <div class="header-actions">
       <PaperButton @onClick={{this.undo}} @title="撤销 Ctrl/Cmd+Z">撤销</PaperButton>
       <PaperButton @onClick={{this.redo}} @title="重做 Ctrl/Cmd+Y">重做</PaperButton>
-      <PaperButton @raised={{true}} @primary={{true}} @onClick={{fn this.createCueDraft "灯光"}}>新增提示</PaperButton>
     </div>
   </header>
 
   <section class="show-strip">
-    <PaperInput @label="演出名称" @value={{this.show.title}} @onChange={{this.updateShowTitle}} class="show-title-input" />
-    <div class="show-stats">
-      <span><strong>{{this.show.scenes.length}}</strong> 场次</span>
-      <span><strong>{{this.allCues.length}}</strong> 条提示</span>
-      <span><strong>{{this.errors}}</strong> 项阻塞</span>
+    <div class="show-fields">
+      <PaperInput @label="巡演名称" @value={{this.book.title}} @onChange={{fn this.updateBookField "title"}} />
+      <PaperInput @label="剧场" @value={{this.book.venue}} @onChange={{fn this.updateBookField "venue"}} />
+      <PaperInput @label="日期" @value={{this.book.date}} @onChange={{fn this.updateBookField "date"}} />
     </div>
-    <div class="search-box">
-      <PaperInput @label="查找场次" @value={{this.search}} @onChange={{this.setSearch}} />
+    <div class="show-stats">
+      <span><strong>{{this.book.templates.length}}</strong> 模板</span>
+      <span><strong>{{this.book.scenes.length}}</strong> 场次</span>
+      <span><strong>{{this.totalCueCount}}</strong> 生效提示</span>
+      <span><strong>{{this.errors}}</strong> 阻塞</span>
+    </div>
+    <div class="mode-switch paper-surface">
+      <button type="button" class={{if (eq this.mode "scene") "is-active"}} {{on "click" (fn this.switchMode "scene")}}>场次调整</button>
+      <button type="button" class={{if (eq this.mode "template") "is-active"}} {{on "click" (fn this.switchMode "template")}}>模板库</button>
     </div>
   </section>
 
-  <main class="stage-workspace">
-    <aside class="scene-rail paper-surface">
-      <div class="rail-heading">
-        <div><small>SCENES</small><h2>幕次与场次</h2></div>
-        <PaperButton @iconButton={{true}} @primary={{true}} @onClick={{this.addScene}} @title="新增场次">＋</PaperButton>
+  {{#if this.pendingJobs.length}}
+    <section class="job-banner paper-surface">
+      <div class="job-head">
+        <strong>待处理套用 · {{this.pendingJobs.length}}</strong>
+        <span>上次套用未完成，已保留原场次与模板数据，可继续处理或移除。</span>
       </div>
-      <div class="scene-list">
-        {{#each this.filteredScenes as |scene|}}
-          <button type="button" class="scene-item {{if scene.active "is-active"}}" {{on "click" (fn this.selectScene scene.id)}}>
-            <span class="act-name">{{scene.act}}</span>
-            <strong>{{scene.name}} · {{scene.title}}</strong>
-            <small>{{scene.startTime}} · {{scene.cues.length}} 条 · {{scene.issueCount}} 项检查</small>
-          </button>
-        {{else}}
-          <p class="empty-copy">未找到场次</p>
+      <div class="job-list">
+        {{#each this.pendingJobs as |job|}}
+          <div class="job-row status-{{job.status}}">
+            <div class="job-info">
+              <strong>{{job.label}}</strong>
+              <small>状态：{{if (eq job.status "failed") "失败已回滚" "待处理"}} · 已尝试 {{job.attempts}} 次{{if job.error (concat " · " job.error)}}</small>
+            </div>
+            <PaperButton @raised={{true}} @primary={{true}} @onClick={{fn this.continueJob job.id}}>继续处理</PaperButton>
+            <PaperButton @onClick={{fn this.discardJob job.id}}>移除</PaperButton>
+          </div>
         {{/each}}
       </div>
-      <div class="rail-footer">
-        <PaperButton @onClick={{this.copyPreviousScene}} class="wide-button">复制上一场流程</PaperButton>
-        <PaperButton @onClick={{this.lockVersion}} class="wide-button" @warn={{true}}>锁定当前版本</PaperButton>
-      </div>
-    </aside>
+    </section>
+  {{/if}}
 
-    <section class="cue-board">
-      {{#if this.activeScene}}
-        <div class="board-heading paper-surface">
-          <div>
-            <small>ACTIVE SCENE</small>
-            <div class="scene-title-edit">
-              <PaperInput @value={{this.activeScene.act}} @onChange={{fn this.updateSceneField "act"}} />
-              <PaperInput @value={{this.activeScene.name}} @onChange={{fn this.updateSceneField "name"}} />
-              <PaperInput @value={{this.activeScene.title}} @onChange={{fn this.updateSceneField "title"}} />
+  <main class="stage-workspace">
+    {{#if (eq this.mode "scene")}}
+      <aside class="scene-rail paper-surface" aria-label="剧场场次列表">
+        <div class="rail-heading">
+          <div><small>SCENES</small><h2>剧场场次</h2></div>
+          <PaperButton @iconButton={{true}} @primary={{true}} @onClick={{this.addScene}} @title="复制新场次（选择模板）">＋</PaperButton>
+        </div>
+        <div class="rail-search">
+          <PaperInput @label="查找场次 / 模板" @value={{this.search}} @onChange={{this.setSearch}} />
+        </div>
+        <div class="scene-list">
+          {{#each this.sceneRows as |row|}}
+            <button type="button" class="scene-item {{if row.active "is-active"}}" {{on "click" (fn this.selectScene row.scene.id)}}>
+              <span class="act-name">{{row.act}} · {{row.templateName}}</span>
+              <strong>{{row.name}} · {{row.title}}</strong>
+              <small>{{row.startTime}} · {{row.cueCount}} 条 · {{row.duration}} 秒</small>
+              <small class="scene-flags">
+                <span class="tag tag-version">v{{row.version}}{{if row.stale (concat " → v" row.current)}}</span>
+                {{#if row.stale}}<span class="tag tag-stale">待迁移</span>{{/if}}
+                {{#if row.scene.locked}}<span class="tag tag-locked">已锁定</span>{{/if}}
+                {{#if row.issueCount}}<span class="tag tag-issue">{{row.issueCount}} 项检查</span>{{/if}}
+              </small>
+            </button>
+          {{else}}
+            <p class="empty-copy">未找到场次，点右上角 ＋ 选择模板复制一场。</p>
+          {{/each}}
+        </div>
+        <div class="rail-footer">
+          <PaperButton @onClick={{this.openCopyPanel}} class="wide-button" @primary={{true}} @raised={{true}}>复制新场次（选模板）</PaperButton>
+          <PaperButton @onClick={{this.lockVersion}} class="wide-button" @warn={{true}}>锁定当前版本</PaperButton>
+        </div>
+      </aside>
+
+      <section class="cue-board">
+        {{#if this.activeEffective}}
+          <div class="board-heading paper-surface">
+            <div>
+              <small>ACTIVE SCENE · 只记本场覆盖</small>
+              <div class="scene-title-edit">
+                <PaperInput @value={{this.activeEffective.scene.act}} @onChange={{fn this.updateSceneField "act"}} />
+                <PaperInput @value={{this.activeEffective.scene.name}} @onChange={{fn this.updateSceneField "name"}} />
+                <PaperInput @value={{this.activeEffective.scene.title}} @onChange={{fn this.updateSceneField "title"}} />
+              </div>
+            </div>
+            <PaperInput @label="开场时间" @value={{this.activeEffective.scene.startTime}} @onChange={{fn this.updateSceneField "startTime"}} />
+            <div class="lock-state">
+              {{#if this.activeEffective.scene.locked}}
+                <span class="locked-label">本场已锁定</span>
+                <PaperButton @onClick={{this.toggleSceneLock}}>解锁修订</PaperButton>
+              {{else}}
+                <PaperButton @onClick={{this.toggleSceneLock}}>锁定本场</PaperButton>
+              {{/if}}
             </div>
           </div>
-          <PaperInput @label="开场时间" @value={{this.activeScene.startTime}} @onChange={{fn this.updateSceneField "startTime"}} />
-          <div class="lock-state">
-            {{#if this.activeScene.locked}}
-              <span class="locked-label">本场已锁定</span>
-              <PaperButton @onClick={{this.createRevision}}>建立修订</PaperButton>
-            {{else}}
-              <PaperButton @onClick={{this.toggleSceneLock}}>锁定本场</PaperButton>
-            {{/if}}
-          </div>
-        </div>
 
-        <div class="timeline paper-surface">
-          <div class="timeline-head">
-            <div><small>PROMPT SEQUENCE</small><h2>提示顺序与时间</h2></div>
-            <div class="keyboard-note">拖动排序 · <kbd>Alt</kbd> + <kbd>↑↓</kbd> 调整 · <kbd>N</kbd> 新建</div>
-          </div>
-          <div class="timeline-labels">
-            <span>时间</span><span>类型 / 提示内容</span><span>时长</span><span>负责人</span>
-          </div>
-          <div class="cue-list">
-            {{#each this.cueRows as |cue|}}
-              <article
-                class="cue-row kind-{{cue.kindClass}} {{if cue.selected "is-selected"}}"
-                draggable="true"
-                {{on "dragstart" (fn this.startDrag cue.id)}}
-                {{on "dragover" this.allowDrop}}
-                {{on "drop" (fn this.dropOn cue.id)}}
-                {{on "click" (fn this.selectCue cue.id)}}
-              >
-                <div class="cue-time">
-                  <span class="drag-dot">⠿</span>
-                  <strong>{{cue.start}}</strong>
-                  <small>至 {{cue.end}}</small>
+          {{#if this.activeEffective.template}}
+            <div class="template-banner paper-surface">
+              <div>
+                <small>INHERITED TEMPLATE</small>
+                <strong>{{this.activeEffective.template.name}} · v{{this.activeEffective.version.version}}</strong>
+                <span class="inherit-note">提示顺序、时长、负责人默认值来自模板；下表仅「本场已覆盖」会保存到本剧场。</span>
+              </div>
+              {{#unless this.activeEffective.upToDate}}
+                <div class="upgrade-box">
+                  <span class="tag tag-stale">本场停留 v{{this.activeEffective.scene.templateVersion}}，模板已到 v{{this.activeEffective.template.currentVersion}}</span>
+                  <PaperButton @raised={{true}} @primary={{true}} @onClick={{this.upgradeActiveScene}}>迁移到新版本</PaperButton>
                 </div>
-                <div class="cue-main">
-                  <div class="cue-title-line">
-                    <span class="cue-index">{{cue.index}}</span>
-                    <span class="cue-kind">{{cue.kind}}</span>
-                    <h3>{{cue.title}}</h3>
-                    {{#if cue.hasIssue}}<span class="issue-flag">检查</span>{{/if}}
+              {{/unless}}
+            </div>
+          {{else}}
+            <div class="template-banner paper-surface is-danger">
+              <strong>引用的模板已缺失</strong>
+              <span>本场覆盖完整保留，重新建立模板后再套用即可恢复。</span>
+            </div>
+          {{/if}}
+
+          {{#if this.activeEffective.orphanOverrides.length}}
+            <div class="orphan-panel paper-surface">
+              <div class="panel-heading"><div><small>ORPHAN OVERRIDES</small><h2>模板中已删除的本场覆盖（已保留）</h2></div></div>
+              <div class="orphan-list">
+                {{#each this.activeEffective.orphanOverrides as |override|}}
+                  <div class="orphan-row">
+                    <strong>{{override.key}}</strong>
+                    <small>{{join "、" (compact-override override)}}</small>
+                    <PaperButton @warn={{true}} @onClick={{fn this.dropOrphanOverride override.key}}>删除该残留</PaperButton>
                   </div>
-                  <p>
-                    {{#if cue.lighting}}灯光：{{cue.lighting}}{{/if}}
-                    {{#if cue.sound}}音响：{{cue.sound}}{{/if}}
-                    {{#if cue.props.length}}道具：{{join ", " cue.props}}{{/if}}
-                    {{#if cue.cast.length}}演员：{{join ", " cue.cast}}{{/if}}
-                  </p>
+                {{/each}}
+              </div>
+            </div>
+          {{/if}}
+
+          {{#if this.activeEffective.scene.migrationWarnings.length}}
+            <div class="migration-note paper-surface">
+              <strong>迁移说明</strong>
+              {{#each this.activeEffective.scene.migrationWarnings as |warning|}}
+                <p>· {{warning}}</p>
+              {{/each}}
+              <PaperButton @onClick={{this.clearMigrationWarnings}}>知道了</PaperButton>
+            </div>
+          {{/if}}
+
+          <div class="timeline paper-surface">
+            <div class="timeline-head">
+              <div><small>PROMPT SEQUENCE（顺序来自模板）</small><h2>提示顺序与时间</h2></div>
+              <div class="keyboard-note">未覆盖字段随模板即时重算</div>
+            </div>
+            <div class="timeline-labels">
+              <span>时间</span><span>类型 / 提示内容</span><span>时长</span><span>负责人 / 来源</span>
+            </div>
+            <div class="cue-list">
+              {{#each this.cueRows as |cue|}}
+                <button type="button" class="cue-row kind-{{cue.kindClass}} {{if cue.selected "is-selected"}}" {{on "click" (fn this.selectCue cue.key)}}>
+                  <div class="cue-time">
+                    <span class="drag-dot">{{if cue.overridden "✎" "⠿"}}</span>
+                    <strong>{{cue.start}}</strong>
+                    <small>至 {{cue.end}}</small>
+                  </div>
+                  <div class="cue-main">
+                    <div class="cue-title-line">
+                      <span class="cue-index">{{cue.index}}</span>
+                      <span class="cue-kind">{{cue.kind}}</span>
+                      <span class="cue-title-text">{{cue.title}}</span>
+                      {{#if cue.hasIssue}}<span class="issue-flag">检查</span>{{/if}}
+                    </div>
+                    <p>
+                      {{#if cue.propsLabel}}道具：{{cue.propsLabel}}{{/if}}
+                      {{#if cue.castLabel}}演员：{{cue.castLabel}}{{/if}}
+                    </p>
+                  </div>
+                  <div class="cue-duration">{{cue.duration}}<small>秒</small></div>
+                  <div class="cue-owner">
+                    <strong>{{if cue.owner cue.owner "待指定"}}</strong>
+                    <small class={{if cue.overridden "owner-over" "owner-inherit"}}>{{cue.overriddenLabel}}</small>
+                  </div>
+                </button>
+              {{else}}
+                <div class="empty-board">
+                  <h3>模板当前版本没有提示</h3>
+                  <p>到「模板库」为该模板添加提示，或迁移到包含提示的新版本。</p>
                 </div>
-                <div class="cue-duration">{{cue.duration}}<small>秒</small></div>
-                <div class="cue-owner">
-                  <strong>{{if cue.owner cue.owner "待指定"}}</strong>
-                  <small>{{if cue.dependsOn.length (concat cue.dependsOn.length " 个前置") "无前置依赖"}}</small>
-                </div>
-              </article>
-            {{else}}
-              <div class="empty-board">
-                <h3>本场还没有提示</h3>
-                <p>新增第一条灯光、音响或演员提示，系统会自动建立时间轴。</p>
-                <PaperButton @raised={{true}} @primary={{true}} @onClick={{fn this.createCueDraft "灯光"}}>新增第一条提示</PaperButton>
+              {{/each}}
+            </div>
+          </div>
+        {{else}}
+          <div class="empty-board paper-surface">
+            <h3>还没有任何场次</h3>
+            <p>先在「模板库」准备流程，再点「复制新场次（选模板）」。</p>
+          </div>
+        {{/if}}
+      </section>
+    {{else}}
+      <aside class="scene-rail paper-surface template-rail" aria-label="模板库列表">
+        <div class="rail-heading">
+          <div><small>TEMPLATES</small><h2>模板库</h2></div>
+          <PaperButton @iconButton={{true}} @primary={{true}} @onClick={{this.createTemplate}} @title="新建模板">＋</PaperButton>
+        </div>
+        <div class="scene-list">
+          {{#each this.templateRows as |row|}}
+            <button type="button" class="scene-item {{if row.active "is-active"}}" {{on "click" (fn this.selectTemplate row.id)}}>
+              <span class="act-name">TEMPLATE</span>
+              <strong>{{row.name}}</strong>
+              <small>v{{row.version}} · {{row.cueCount}} 条提示 · {{row.sceneCount}} 个场次引用</small>
+            </button>
+          {{else}}
+            <p class="empty-copy">还没有模板，点 ＋ 新建。</p>
+          {{/each}}
+        </div>
+      </aside>
+
+      <section class="cue-board">
+        {{#if this.activeTemplate}}
+          <div class="board-heading paper-surface template-head">
+            <div class="template-meta-edit">
+              <PaperInput @label="模板名称" @value={{this.templateNameDraft}} @onChange={{this.updateTemplateNameDraft}} />
+              <PaperInput @label="说明" @value={{this.templateDescriptionDraft}} @onChange={{this.updateTemplateDescriptionDraft}} />
+            </div>
+            <PaperButton @onClick={{this.saveTemplateMeta}}>保存信息</PaperButton>
+          </div>
+
+          <div class="timeline paper-surface">
+            <div class="timeline-head">
+              <div><small>TEMPLATE WORKING COPY</small><h2>提示顺序 / 时长 / 负责人</h2></div>
+              <div class="keyboard-note">拖动调整顺序 · 发布后才形成新版本</div>
+            </div>
+            <div class="cue-list">
+              {{#each this.templateDraftRows as |cue|}}
+                <button
+                  type="button"
+                  class="cue-row kind-{{cue.kindClass}} {{if cue.selected "is-selected"}}"
+                  draggable="true"
+                  {{on "dragstart" (fn this.startTemplateDrag cue.key)}}
+                  {{on "dragover" this.allowTemplateDrop}}
+                  {{on "drop" (fn this.dropTemplateOn cue.key)}}
+                  {{on "click" (fn this.selectTemplateDraftCue cue.key)}}
+                >
+                  <div class="cue-time"><span class="drag-dot">⠿</span><strong>#{{cue.index}}</strong></div>
+                  <div class="cue-main">
+                    <div class="cue-title-line">
+                      <span class="cue-index">{{cue.index}}</span>
+                      <span class="cue-kind">{{cue.kind}}</span>
+                      <span class="cue-title-text">{{cue.title}}</span>
+                    </div>
+                  </div>
+                  <div class="cue-duration">{{cue.duration}}<small>秒</small></div>
+                  <div class="cue-owner"><strong>{{cue.owner}}</strong></div>
+                </button>
+              {{else}}
+                <div class="empty-board"><h3>模板还没有提示</h3><p>在右侧添加第一条提示。</p></div>
+              {{/each}}
+            </div>
+            <div class="publish-bar">
+              <PaperInput @label="版本说明" @value={{this.versionNote}} @onChange={{this.updateVersionNote}} class="version-note-input" />
+              <PaperButton @onClick={{this.discardTemplateDraft}}>放弃改动</PaperButton>
+              <PaperButton @raised={{true}} @primary={{true}} @disabled={{this.templateClean}} @onClick={{this.publishTemplate}}>发布新版本</PaperButton>
+            </div>
+          </div>
+        {{else}}
+          <div class="empty-board paper-surface"><h3>未选择模板</h3></div>
+        {{/if}}
+      </section>
+    {{/if}}
+
+    <aside class="inspector-rail" aria-label="检查、覆盖与版本">
+      {{#if (eq this.mode "template")}}
+        <section class="inspector paper-surface">
+          <div class="inspector-heading">
+            <div><small>TEMPLATE CUE</small><h2>{{if this.templateCueDraft "编辑模板提示" "选择模板提示"}}</h2></div>
+            {{#if this.templateCueDraft}}<button type="button" class="close-button" {{on "click" this.cancelTemplateCueDraft}}>×</button>{{/if}}
+          </div>
+          {{#if this.templateCueDraft}}
+            <div class="draft-form">
+              <PaperSelect @label="提示类型" @options={{this.cueKindOptions}} @selected={{this.templateCueDraft.kind}} @onChange={{this.selectTemplateCueKind}} />
+              <PaperInput @label="提示标题" @value={{this.templateCueDraft.title}} @onChange={{fn this.updateTemplateDraftCue "title"}} />
+              <PaperInput @label="时长（秒）" @type="number" @value={{this.templateCueDraft.duration}} @onChange={{fn this.updateTemplateDraftCue "duration"}} />
+              <PaperSelect @label="负责人" @options={{this.ownerOptions}} @selected={{this.templateCueDraft.owner}} @onChange={{this.selectTemplateCueOwner}} />              <PaperInput @label="灯光提示" @textarea={{true}} @passThru={{hash rows=2}} @value={{this.templateCueDraft.lighting}} @onChange={{fn this.updateTemplateDraftCue "lighting"}} />
+              <PaperInput @label="音响提示" @textarea={{true}} @passThru={{hash rows=2}} @value={{this.templateCueDraft.sound}} @onChange={{fn this.updateTemplateDraftCue "sound"}} />
+              <PaperInput @label="道具（顿号分隔）" @value={{this.templateCueDraft.props}} @onChange={{fn this.updateTemplateDraftCue "props"}} />
+              <PaperInput @label="演员（顿号分隔）" @value={{this.templateCueDraft.cast}} @onChange={{fn this.updateTemplateDraftCue "cast"}} />
+              <PaperInput @label="前置提示 key（顿号分隔）" @value={{this.templateCueDraft.dependsOnKeys}} @onChange={{fn this.updateTemplateDraftCue "dependsOnKeys"}} />
+              <div class="form-actions">
+                <PaperButton @warn={{true}} @onClick={{fn this.removeTemplateCueDraft this.templateCueDraft.key}}>删除</PaperButton>
+                <span></span>
+                <PaperButton @onClick={{this.cancelTemplateCueDraft}}>取消</PaperButton>
+                <PaperButton @raised={{true}} @primary={{true}} @onClick={{this.saveTemplateCueDraft}}>写入工作副本</PaperButton>
+              </div>
+            </div>
+          {{else}}
+            <div class="empty-copy">
+              <p>选择左侧提示编辑，或新增一条。</p>
+              <PaperButton @raised={{true}} @primary={{true}} @onClick={{fn this.createTemplateCueDraft "灯光"}}>新增模板提示</PaperButton>
+            </div>
+          {{/if}}
+        </section>
+
+        <section class="inspector paper-surface">
+          <div class="panel-heading"><div><small>VERSIONS</small><h2>模板版本（append-only）</h2></div></div>
+          <div class="version-stack">
+            {{#each this.templateVersionRows as |version|}}
+              <div class="version-chip {{if version.current "is-current"}}">
+                <strong>v{{version.version}}{{if version.current " · 当前"}}</strong>
+                <small>{{version.note}} · {{version.createdAt}} · {{version.cueCount}} 条</small>
               </div>
             {{/each}}
           </div>
-          <button type="button" class="add-row" {{on "click" (fn this.createCueDraft "灯光")}}>＋ 添加提示点</button>
-        </div>
+        </section>
+      {{else}}
+        <section class="inspector paper-surface">
+          <div class="inspector-heading">
+            <div><small>SCENE OVERRIDE</small><h2>{{if this.sceneCueDraft "编辑本场覆盖" "提示详情"}}</h2></div>
+            {{#if this.sceneCueDraft}}<button type="button" class="close-button" {{on "click" this.cancelSceneDraft}}>×</button>{{/if}}
+          </div>
+          {{#if this.sceneCueDraft}}
+            <div class="draft-form">
+              <p class="override-hint">仅填写本场需要与模板不同的值；保存时只保留差异，其余继续继承模板。</p>
+              <PaperSelect @label="提示类型" @options={{this.cueKindOptions}} @selected={{this.sceneCueDraft.kind}} @onChange={{this.selectSceneCueKind}} />
+              <PaperInput @label="提示标题" @value={{this.sceneCueDraft.title}} @onChange={{fn this.updateSceneDraft "title"}} />
+              <PaperInput @label="时长（秒）" @type="number" @value={{this.sceneCueDraft.duration}} @onChange={{fn this.updateSceneDraft "duration"}} />
+              <PaperSelect @label="负责人" @options={{this.ownerOptions}} @selected={{this.sceneCueDraft.owner}} @onChange={{this.selectSceneCueOwner}} />
+              <PaperInput @label="灯光提示" @textarea={{true}} @passThru={{hash rows=2}} @value={{this.sceneCueDraft.lighting}} @onChange={{fn this.updateSceneDraft "lighting"}} />
+              <PaperInput @label="音响提示" @textarea={{true}} @passThru={{hash rows=2}} @value={{this.sceneCueDraft.sound}} @onChange={{fn this.updateSceneDraft "sound"}} />
+              <PaperInput @label="道具（顿号分隔）" @value={{this.sceneCueDraft.props}} @onChange={{fn this.updateSceneDraft "props"}} />
+              <PaperInput @label="演员（顿号分隔）" @value={{this.sceneCueDraft.cast}} @onChange={{fn this.updateSceneDraft "cast"}} />
+              <PaperInput @label="备注" @textarea={{true}} @passThru={{hash rows=2}} @value={{this.sceneCueDraft.notes}} @onChange={{fn this.updateSceneDraft "notes"}} />
+              <div class="form-actions">
+                <span></span><span></span>
+                <PaperButton @onClick={{this.cancelSceneDraft}}>取消</PaperButton>
+                <PaperButton @raised={{true}} @primary={{true}} @onClick={{this.saveSceneCueDraft}}>保存覆盖</PaperButton>
+              </div>
+            </div>
+          {{else if this.selectedCue}}
+            <div class="selected-cue">
+              <span class="selected-kind">{{this.selectedCue.kind}}</span>
+              <h3>{{this.selectedCue.title}}</h3>
+              <p class="source-line {{if this.selectedCue.overriddenFields.length "owner-over" "owner-inherit"}}">
+                {{if this.selectedCue.overriddenFields.length (concat "本场已覆盖：" (join "、" this.selectedCue.overriddenFields)) "全部继承模板"}}
+              </p>
+              <dl>
+                <dt>负责人</dt><dd>{{if this.selectedCue.owner this.selectedCue.owner "缺失"}}</dd>
+                <dt>灯光</dt><dd>{{if this.selectedCue.lighting this.selectedCue.lighting "—"}}</dd>
+                <dt>音响</dt><dd>{{if this.selectedCue.sound this.selectedCue.sound "—"}}</dd>
+                <dt>道具</dt><dd>{{if this.selectedCue.props.length this.selectedProps "—"}}</dd>
+                <dt>演员</dt><dd>{{if this.selectedCue.cast.length this.selectedCast "—"}}</dd>
+                <dt>前置</dt><dd>{{if this.selectedCue.dependsOnKeys.length (join "、" this.selectedCue.dependsOnKeys) "无"}}</dd>
+              </dl>
+              <div class="inspector-actions">
+                <PaperButton @onClick={{this.editSelectedSceneCue}} @raised={{true}} @primary={{true}}>编辑覆盖</PaperButton>
+                {{#if this.selectedCue.overriddenFields.length}}
+                  <PaperButton @onClick={{fn this.resetSceneCueOverride this.selectedCue.key}}>清除覆盖（恢复继承）</PaperButton>
+                {{/if}}
+              </div>
+            </div>
+          {{else}}
+            <p class="empty-copy">选择一条提示查看来源与覆盖。</p>
+          {{/if}}
+        </section>
       {{/if}}
-    </section>
-
-    <aside class="inspector-rail">
-      <section class="inspector paper-surface">
-        <div class="inspector-heading">
-          <div><small>{{if this.draft "CUE EDITOR" "CUE INSPECTOR"}}</small><h2>{{if this.draft "编辑提示" "提示详情"}}</h2></div>
-          {{#if this.draft}}<button type="button" class="close-button" {{on "click" this.cancelDraft}}>×</button>{{/if}}
-        </div>
-        {{#if this.draft}}
-          <div class="draft-form">
-            <PaperSelect @label="提示类型" @options={{this.cueKindOptions}} @selected={{this.draft.kind}} @onChange={{fn this.updateDraft "kind"}} />
-            <PaperInput @label="提示标题" @value={{this.draft.title}} @onChange={{fn this.updateDraft "title"}} />
-            <PaperInput @label="时长（秒）" @type="number" @value={{this.draft.duration}} @onChange={{fn this.updateDraft "duration"}} />
-            <PaperSelect @label="负责人" @options={{this.ownerOptions}} @selected={{this.draft.owner}} @onChange={{fn this.updateDraft "owner"}} />
-            <PaperInput @label="灯光提示" @textarea={{true}} @passThru={{hash rows=2}} @value={{this.draft.lighting}} @onChange={{fn this.updateDraft "lighting"}} />
-            <PaperInput @label="音响提示" @textarea={{true}} @passThru={{hash rows=2}} @value={{this.draft.sound}} @onChange={{fn this.updateDraft "sound"}} />
-            <PaperInput @label="道具（顿号分隔）" @value={{this.draft.props}} @onChange={{fn this.updateDraft "props"}} />
-            <PaperInput @label="演员（顿号分隔）" @value={{this.draft.cast}} @onChange={{fn this.updateDraft "cast"}} />
-            <PaperInput @label="前置提示 ID" @value={{this.draft.dependsOn}} @onChange={{fn this.updateDraft "dependsOn"}} />
-            <PaperInput @label="备注" @textarea={{true}} @passThru={{hash rows=3}} @value={{this.draft.notes}} @onChange={{fn this.updateDraft "notes"}} />
-            <div class="form-actions">
-              {{#if this.draft.id}}<PaperButton @warn={{true}} @onClick={{fn this.removeCue this.draft.id}}>删除</PaperButton>{{/if}}
-              <span></span>
-              <PaperButton @onClick={{this.cancelDraft}}>取消</PaperButton>
-              <PaperButton @raised={{true}} @primary={{true}} @onClick={{this.saveDraft}}>保存提示</PaperButton>
-            </div>
-          </div>
-        {{else if this.selectedCue}}
-          <div class="selected-cue">
-            <span class="selected-kind">{{this.selectedCue.kind}}</span>
-            <h3>{{this.selectedCue.title}}</h3>
-            <dl>
-              <dt>负责人</dt><dd>{{if this.selectedCue.owner this.selectedCue.owner "缺失"}}</dd>
-              <dt>灯光</dt><dd>{{if this.selectedCue.lighting this.selectedCue.lighting "—"}}</dd>
-              <dt>音响</dt><dd>{{if this.selectedCue.sound this.selectedCue.sound "—"}}</dd>
-              <dt>道具</dt><dd>{{if this.selectedCue.props.length this.selectedProps "—"}}</dd>
-              <dt>演员</dt><dd>{{if this.selectedCue.cast.length this.selectedCast "—"}}</dd>
-              <dt>备注</dt><dd>{{if this.selectedCue.notes this.selectedCue.notes "—"}}</dd>
-            </dl>
-            <div class="inspector-actions">
-              <PaperButton @onClick={{this.editSelectedCue}} @raised={{true}} @primary={{true}}>编辑提示</PaperButton>
-              <PaperButton @onClick={{fn this.moveSelected -1}}>上移一条</PaperButton>
-              <PaperButton @onClick={{fn this.moveSelected 1}}>下移一条</PaperButton>
-            </div>
-          </div>
-        {{else}}
-          <p class="empty-copy">选择一条提示查看详细信息。</p>
-        {{/if}}
-      </section>
 
       <section class="check-panel paper-surface">
         <div class="panel-heading">
@@ -187,12 +381,12 @@
         </div>
         <div class="issue-list">
           {{#each this.issues as |issue|}}
-            <button type="button" class="issue-item severity-{{issue.severity}}" {{on "click" (fn this.selectCue issue.cueId)}}>
+            <button type="button" class="issue-item severity-{{issue.severity}}" {{on "click" (fn this.selectScene issue.sceneId)}}>
               <span class="issue-icon">{{if issue.icon issue.icon "i"}}</span>
               <span><strong>{{issue.title}}</strong><small>{{issue.detail}}</small></span>
             </button>
           {{else}}
-            <div class="all-clear"><span>✓</span><p>未发现时间、负责人、撞场或失效引用问题。</p></div>
+            <div class="all-clear"><span>✓</span><p>未发现时间、负责人、撞场、迁移或失效引用问题。</p></div>
           {{/each}}
         </div>
       </section>
@@ -204,7 +398,7 @@
           {{#if this.compareVersion}}
             <div class="version-summary">
               <strong>{{this.compareVersion.name}}</strong>
-              <small>{{this.compareVersion.data.title}} · {{this.versionDiff.length}} 条提示</small>
+              <small>{{this.compareVersion.book.title}} · {{this.versionDiff.length}} 条生效提示</small>
             </div>
             <div class="diff-list">
               {{#each this.versionDiff as |diff|}}
@@ -217,11 +411,33 @@
             </div>
           {{/if}}
         {{else}}
-          <p class="empty-copy">尚未锁定版本。锁定后可比较当前流程与历史快照。</p>
+          <p class="empty-copy">尚未锁定版本。</p>
         {{/if}}
       </section>
     </aside>
   </main>
+
+  {{#if this.showCopyPanel}}
+    <div class="modal-overlay">
+      <button type="button" class="modal-backdrop" aria-label="关闭复制面板" {{on "click" this.closeCopyPanel}}></button>
+      <div class="modal-card paper-surface">
+        <div class="modal-head">
+          <h2>复制新场次</h2>
+          <button type="button" class="close-button" {{on "click" this.closeCopyPanel}}>×</button>
+        </div>
+        <p class="modal-copy">选择要套用的模板；新场次从模板干净继承，不携带任何其他剧场的临时调整。</p>
+        <PaperSelect @label="模板" @options={{this.copyTemplateOptions}} @optionLabelPath="label" @selected={{this.copyTemplateSelection}} @onChange={{this.selectCopyTemplate}} />
+        <PaperInput @label="场次编号" @value={{this.copyName}} @onChange={{fn this.updateCopyField "copyName"}} />
+        <PaperInput @label="场次标题" @value={{this.copyTitle}} @onChange={{fn this.updateCopyField "copyTitle"}} />
+        <PaperInput @label="开场时间" @value={{this.copyStartTime}} @onChange={{fn this.updateCopyField "copyStartTime"}} />
+        <div class="form-actions">
+          <span></span><span></span>
+          <PaperButton @onClick={{this.closeCopyPanel}}>取消</PaperButton>
+          <PaperButton @raised={{true}} @primary={{true}} @onClick={{this.confirmCopyScene}}>套用模板新建</PaperButton>
+        </div>
+      </div>
+    </div>
+  {{/if}}
 
   {{#if this.message}}<div class="toast-message">{{this.message}}</div>{{/if}}
 </div>

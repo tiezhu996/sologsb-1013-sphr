@@ -730,6 +730,363 @@ kbd {
   line-height: 1.6;
 }
 
+/* ---------- 模式切换 / 演出字段 ---------- */
+.show-fields {
+  display: grid;
+  grid-template-columns: minmax(200px, 1.4fr) minmax(120px, 1fr) minmax(120px, 1fr);
+  gap: 12px;
+}
+
+.mode-switch {
+  display: inline-flex;
+  padding: 4px;
+  gap: 4px;
+  justify-self: end;
+  border-radius: 10px;
+}
+
+.mode-switch button {
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mode-switch button.is-active {
+  color: #fff;
+  background: var(--blue);
+}
+
+/* ---------- 套用作业横幅（失败回滚 / 重开续处理） ---------- */
+.job-banner {
+  margin: 12px 14px 0;
+  padding: 12px 14px;
+  border-left: 4px solid var(--amber);
+}
+
+.job-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.job-head strong {
+  font-size: 13px;
+}
+
+.job-head span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.job-list {
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.job-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff7e7;
+}
+
+.job-row.status-pending {
+  background: #eef4fb;
+}
+
+.job-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.job-info strong,
+.job-info small {
+  display: block;
+}
+
+.job-info small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+/* ---------- 场次标签 ---------- */
+.rail-search {
+  padding: 8px 10px 2px;
+}
+
+.scene-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.tag {
+  padding: 1px 6px;
+  border-radius: 99px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.tag-version {
+  color: #35506a;
+  background: #e7eef5;
+}
+
+.tag-stale {
+  color: #8a5a17;
+  background: #fbe6c4;
+}
+
+.tag-locked {
+  color: #6d4a86;
+  background: #ece3f5;
+}
+
+.tag-issue {
+  color: #9d303b;
+  background: #fbe9eb;
+}
+
+/* ---------- 模板横幅 / 升级 / 迁移 ---------- */
+.template-banner {
+  padding: 12px 15px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.template-banner small {
+  display: block;
+  color: #8b98a5;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .14em;
+}
+
+.template-banner strong {
+  display: block;
+  margin: 2px 0;
+  font-size: 13px;
+}
+
+.inherit-note {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.template-banner.is-danger {
+  border-left: 4px solid var(--red);
+}
+
+.upgrade-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.migration-note {
+  padding: 10px 14px;
+  border-left: 4px solid var(--blue);
+}
+
+.migration-note strong {
+  font-size: 12px;
+}
+
+.migration-note p {
+  margin: 4px 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.orphan-panel {
+  overflow: hidden;
+}
+
+.orphan-list {
+  padding: 8px 12px 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.orphan-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: #fdf3e2;
+}
+
+.orphan-row strong {
+  font: 700 11px Consolas, monospace;
+}
+
+.orphan-row small {
+  flex: 1;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+/* ---------- 覆盖来源标识 ---------- */
+.owner-over {
+  color: #b06a12;
+  font-weight: 700;
+}
+
+.owner-inherit {
+  color: #7e93a3;
+}
+
+.cue-row .drag-dot {
+  font-size: 13px;
+}
+
+.cue-title-text {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cue-row {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+}
+
+.source-line {
+  margin: -4px 0 10px;
+  font-size: 10px;
+}
+
+.override-hint {
+  margin: 0 0 10px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  color: #7a5318;
+  background: #fdf3e0;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* ---------- 模板库 ---------- */
+.template-head {
+  grid-template-columns: 1fr auto;
+}
+
+.template-meta-edit {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) 1fr;
+  gap: 10px;
+}
+
+.publish-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid #edf0f2;
+}
+
+.version-note-input {
+  flex: 1;
+}
+
+.version-stack {
+  padding: 8px 12px 12px;
+  display: grid;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.version-chip {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #e3e8ec;
+  background: #fafcfe;
+}
+
+.version-chip.is-current {
+  border-color: #8fb6cf;
+  background: #eef6fb;
+}
+
+.version-chip strong,
+.version-chip small {
+  display: block;
+}
+
+.version-chip small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+/* ---------- 复制场次模态框 ---------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: rgba(20, 36, 48, .46);
+  cursor: pointer;
+}
+
+.modal-card {
+  position: relative;
+  z-index: 1;
+  width: min(440px, calc(100vw - 32px));
+  padding: 18px 18px 20px;
+  display: grid;
+  gap: 10px;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.modal-copy {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+
 @media (max-width: 1240px) {
   .stage-header {
     grid-template-columns: 1fr auto;
